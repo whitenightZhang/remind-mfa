@@ -137,39 +137,310 @@ class PlasticsDataExporter(CommonDataExporter):
         self.plot_and_save_figure(ap, f"{name}_flow{tag}.png")
 
     def visualize_demand(self, mfa: fd.MFASystem):
+        import numpy as np
+        import colorsys
+
+        # ========= NS-Plastics 基础色（你的版本） =========
+        NS_PLASTICS_SEED = [
+            "#F0857B",  # soft pink
+            "#FEE026",  # muted blue
+            "#95CF93",  # soft green
+            "#BF96C2",  # muted purple
+            "#F6B176",  # soft orange
+            "#87B2D5",  # warm yellow
+            "#CA9A7E",  # tan/brown
+            "#F5B1CA",  # pale pink
+        ]
+
+        # —— 可调参数（保持你当前数值） ——
+        SAT_BOOST_LINES = 1.5    # 折线饱和提升
+        SAT_BOOST_AREAS = 1.0  # 面积饱和提升
+        LIGHTEN_HIST    = 0.22   # 历史线提亮
+        DESAT_HIST      = 0.85   # 历史线去饱和
+        DARKEN_ROUND    = 0.06   # 扩展色板逐轮变暗
+        TOP_PAD         = 0.90   # matplotlib 顶部留白
+        BOTTOM_PAD      = 0.18   # matplotlib 底部留白
+
+        # ========= 从允许的位置读取 Region =========
+        def _cfg_get(path, default=None):
+            obj = self.cfg
+            for k in path:
+                try:
+                    obj = obj[k] if isinstance(obj, dict) else getattr(obj, k)
+                except Exception:
+                    return default
+            return obj
+
+        # 仅从 schema 允许的位置读取，避免 pydantic 报错
+        region_sel = _cfg_get(["visualization", "sankey", "slice_dict", "r"])
+
+        # ========= 颜色 & 工具（全部返回 hex） =========
+        def _hex_to_rgb01(hx: str):
+            hx = hx.strip().lstrip("#")
+            return int(hx[0:2],16)/255.0, int(hx[2:4],16)/255.0, int(hx[4:6],16)/255.0
+
+        def _rgb01_to_hex(r,g,b):
+            clamp=lambda x:max(0,min(1,x))
+            return "#{:02x}{:02x}{:02x}".format(
+                int(round(clamp(r)*255)), int(round(clamp(g)*255)), int(round(clamp(b)*255))
+            )
+
+        def _sat_light(hx: str, sat_mult=1.0, light_add=0.0):
+            r,g,b=_hex_to_rgb01(hx); h,l,s=colorsys.rgb_to_hls(r,g,b)
+            l=min(1.0, l+light_add); s=max(0.0, min(1.0, s*sat_mult))
+            r2,g2,b2=colorsys.hls_to_rgb(h,l,s)
+            return _rgb01_to_hex(r2,g2,b2)
+
+        def _darken(hx: str, delta=0.08):
+            r,g,b=_hex_to_rgb01(hx)
+            return _rgb01_to_hex(r-delta, g-delta, b-delta)
+
+        def _expand(seed, nmin=256, dark_step=DARKEN_ROUND):
+            """扩展色板长度，避免 color_map 越界。"""
+            if not seed: seed=["#7FB2DE"]
+            out=[]; rounds=(nmin+len(seed)-1)//len(seed)
+            for k in range(rounds):
+                tweak=min(0.18, dark_step*k)
+                out += [_darken(c, tweak) for c in seed]
+            return out[:nmin]
+
+        def _long_black_cmap(n=2048):
+            """提供足够长的黑色 color_map，避免 add_line 时 i_color 越界。"""
+            return ["#000000"] * n
+
+        # ========= 维度安全工具（核心：消除多余维度） =========
+        def _sum_over_safe(arr, dims):
+            """对给定 dimletters 逐个尝试 sum_over，忽略不存在的维度。"""
+            for d in dims:
+                try:
+                    arr = arr.sum_over((d,))
+                except Exception:
+                    pass
+            return arr
+
+        def _select_region_or_global(arr):
+            """若 cfg 指定 r 则选该 Region；否则对 r 求和为 Global。最后再保险去 r。"""
+            if region_sel:
+                # 常见 API；失败则回退到对 r 求和
+                for meth in ("sel", "select", "slice"):
+                    try:
+                        return getattr(arr, meth)({"r": region_sel})
+                    except Exception:
+                        pass
+                try:
+                    labels = getattr(getattr(arr.dims, "_dict")["r"], "labels", [])
+                    if region_sel in labels:
+                        idx = labels.index(region_sel)
+                        try:
+                            return arr.isel({"r": idx})
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            return _sum_over_safe(arr, ("r",))
+
+        # —— 基色 / 历史线 / 面积色 —— 
+        base_colors_raw = _expand(NS_PLASTICS_SEED, nmin=512)
+        base_colors     = [_sat_light(c, sat_mult=SAT_BOOST_LINES, light_add=0.0) for c in base_colors_raw]
+        hist_colors     = [_sat_light(c, sat_mult=DESAT_HIST,    light_add=LIGHTEN_HIST) for c in base_colors]
+        stacked_colors  = [_sat_light(c, sat_mult=SAT_BOOST_AREAS, light_add=-0.02)     for c in base_colors]
+
+        # ========= 版式风格 =========
+        def _apply_plotly_style(fig, bottom_legend=True):
+            legend_cfg = dict(orientation="h", xanchor="left", x=0.0)
+            if bottom_legend:
+                legend_cfg.update(yanchor="top", y=-0.12)
+                margins = dict(l=60, r=26, t=64, b=96)
+            else:
+                legend_cfg.update(yanchor="bottom", y=1.02)
+                margins = dict(l=60, r=26, t=72, b=58)
+            fig.update_layout(
+                template="simple_white",
+                font=dict(family="Arial, DejaVu Sans, Helvetica", size=11),
+                title=dict(font=dict(size=14), y=0.98),
+                margin=margins,
+                legend=legend_cfg,
+                showlegend=True,
+            )
+            fig.update_xaxes(showline=True, linewidth=1, linecolor="#333333",
+                            mirror=False, zeroline=False, gridcolor="rgba(0,0,0,0.08)", ticklen=4)
+            fig.update_yaxes(showline=True, linewidth=1, linecolor="#333333",
+                            mirror=False, zeroline=False, gridcolor="rgba(0,0,0,0.08)", ticklen=4)
+
+        def _apply_mpl_style(fig, bottom_legend=True):
+            try:
+                import matplotlib as mpl
+            except Exception:
+                return
+            rc = {
+                "font.family": "DejaVu Sans",
+                "font.size": 10.5,
+                "axes.titlesize": 12.5,
+                "axes.labelsize": 11,
+                "axes.edgecolor": "#333333",
+                "axes.linewidth": 0.9,
+                "axes.facecolor": "white",
+                "axes.grid": False,
+                "xtick.major.size": 3.5, "xtick.major.width": 0.9,
+                "ytick.major.size": 3.5, "ytick.major.width": 0.9,
+                "lines.linewidth": 1.9,
+                "savefig.dpi": 300, "figure.dpi": 120,
+            }
+            with mpl.rc_context(rc):
+                for ax in fig.get_axes():
+                    for side in ["top","right"]:
+                        ax.spines[side].set_visible(False)
+                try:
+                    fig.subplots_adjust(top=TOP_PAD, bottom=BOTTOM_PAD)
+                except Exception:
+                    pass
+
+        def _style(fig, bottom_legend=True):
+            if getattr(self.cfg, "plotting_engine", "plotly") == "plotly":
+                _apply_plotly_style(fig, bottom_legend=bottom_legend)
+            else:
+                _apply_mpl_style(fig, bottom_legend=bottom_legend)
+
+        # ========= 1) 折线：Modelled vs Historic =========
+        modeled_array = _select_region_or_global(mfa.stocks["in_use"].inflow)
+        modeled_array = _sum_over_safe(modeled_array, ("m", "e", "r"))  # 保留 dims: [t,g]
         ap_modeled = self.plotter_class(
-            array=mfa.stocks["in_use"].inflow.sum_over(("r", "m", "e")),
+            array=modeled_array,
             intra_line_dim="Time",
             subplot_dim="Good",
-            line_label="Modeled",
+            line_label="Modelled",
             display_names=self._display_names,
+            color_map=base_colors,
         )
         fig = ap_modeled.plot()
+
+        hist_array = _select_region_or_global(mfa.parameters["production"])
+        hist_array = _sum_over_safe(hist_array, ("r",))                # 保留 dims: [th,g] 这里 th=Historic Time
         ap_historic = self.plotter_class(
-            array=mfa.parameters["production"].sum_over(("r")),
+            array=hist_array,
             intra_line_dim="Historic Time",
             subplot_dim="Good",
-            line_label="Historic Demand",
+            line_label="Historic",
             fig=fig,
             xlabel="Year",
             ylabel="Demand [Mt]",
             display_names=self._display_names,
+            color_map=hist_colors,
+            line_type="dot",
         )
+        fig = ap_historic.plot()
+        _style(fig, bottom_legend=True)
+
+        # 方法图例（底部，确保一定出现）
+        try:
+            if getattr(self.cfg, "plotting_engine", "plotly") == "plotly":
+                import plotly.graph_objects as go
+                fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
+                                        name="Modelled", line=dict(color=base_colors[0], width=2)))
+                fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
+                                        name="Historic", line=dict(color=hist_colors[0], width=2, dash="dot")))
+                fig.update_layout(showlegend=True)
+            else:
+                from matplotlib.lines import Line2D
+                handles = [
+                    Line2D([0],[0], color=base_colors[0], lw=2, label="Modelled"),
+                    Line2D([0],[0], color=hist_colors[0], lw=2, ls=":", label="Historic"),
+                ]
+                try:
+                    fig.legend(handles=handles, loc="lower center", ncol=2,
+                            frameon=False, bbox_to_anchor=(0.5, 0.02))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         self.plot_and_save_figure(ap_historic, "demand.png")
 
-        demand = mfa.stocks["in_use"].inflow.sum_over(("r", "m", "e"))
-        good_dim = demand.dims.index("g")
-        demand = demand.apply(np.cumsum, kwargs={"axis": good_dim})
-        ap = self.plotter_class(
-            array=demand,
+        # ========= 2) 堆叠面积：Inflow / Outflow / Stock + 黑色 inflow 总折线 =========
+        inflow_allr  = _select_region_or_global(mfa.stocks["in_use"].inflow)
+        outflow_allr = _select_region_or_global(mfa.stocks["in_use"].outflow)
+        stock_allr   = _select_region_or_global(mfa.stocks["in_use"].stock)
+
+        inflow = _sum_over_safe(inflow_allr,  ("m", "e"))  # dims: [t,g]
+        outflow = _sum_over_safe(outflow_allr, ("m", "e")) # dims: [t,g]
+        stock  = _sum_over_safe(stock_allr,   ("m", "e"))  # dims: [t,g]
+
+        # Good 维度索引用于 cumsum
+        good_dim = inflow.dims.index("g")
+        inflow_cumsum  = inflow.apply(np.cumsum, kwargs={"axis": good_dim})
+        outflow_cumsum = outflow.apply(np.cumsum, kwargs={"axis": good_dim})
+        stock_cumsum   = stock .apply(np.cumsum, kwargs={"axis": good_dim})
+
+        # 总 inflow 折线（仅保留 Time）
+        inflow_total_line = _sum_over_safe(inflow, ("g", "r", "m", "e"))  # dims: [t]
+
+        # —— Inflow 面积 + 黑线 —— 
+        ap_inflow = self.plotter_class(
+            array=inflow_cumsum,
             intra_line_dim="Time",
             linecolor_dim="Good",
             chart_type="area",
             display_names=self._display_names,
-            title="Demand [Mt]",
+            title="Inflow [Mt]" + (f" — {region_sel}" if region_sel else " — Global"),
+            color_map=stacked_colors,
         )
-        fig = ap.plot()
-        self.plot_and_save_figure(ap, "demand_stacked.png", do_plot=False)
+        fig_inflow = ap_inflow.plot()
+        ap_inflow_line = self.plotter_class(
+            array=inflow_total_line,
+            intra_line_dim="Time",
+            fig=fig_inflow,
+            line_label="Inflow (total)",
+            color_map=_long_black_cmap(),  # 关键：给足够长的黑色列表，避免越界
+        )
+        fig_inflow = ap_inflow_line.plot()
+        _style(fig_inflow, bottom_legend=True)
+        self.plot_and_save_figure(ap_inflow_line, "inflow_stacked.png", do_plot=False)
+
+        # —— Outflow 面积 + 黑线（仍用 inflow 总线）——
+        ap_outflow = self.plotter_class(
+            array=outflow_cumsum,
+            intra_line_dim="Time",
+            linecolor_dim="Good",
+            chart_type="area",
+            display_names=self._display_names,
+            title="Outflow [Mt]" + (f" — {region_sel}" if region_sel else " — Global"),
+            color_map=stacked_colors,
+        )
+        fig_outflow = ap_outflow.plot()
+        ap_outflow_line = self.plotter_class(
+            array=inflow_total_line,
+            intra_line_dim="Time",
+            fig=fig_outflow,
+            line_label="Inflow (total)",
+            color_map=_long_black_cmap(),
+        )
+        fig_outflow = ap_outflow_line.plot()
+        _style(fig_outflow, bottom_legend=True)
+        self.plot_and_save_figure(ap_outflow_line, "outflow_stacked.png", do_plot=False)
+
+        # —— Stock 面积 + 黑线（仍用 inflow 总线）——
+        ap_stock = self.plotter_class(
+            array=stock_cumsum,
+            intra_line_dim="Time",
+            linecolor_dim="Good",
+            chart_type="area",
+            display_names=self._display_names,
+            title="Stock [Mt]" + (f" — {region_sel}" if region_sel else " — Global"),
+            color_map=stacked_colors,
+        )
+        fig_stock = ap_stock.plot()
+        ap_stock_line = self.plotter_class(
+            array=inflow_total_line,
+            intra_line_dim="Time",
+            fig=fig_stock,
+            line_label="Inflow (total)",
+            color_map=_long_black_cmap(),
+        )
+        fig_stock = ap_stock_line.plot()
+        _style(fig_stock, bottom_legend=True)
+        self.plot_and_save_figure(ap_stock_line, "stock_stacked.png", do_plot=False)
+
+
 
     def visualize_stock(self, mfa: fd.MFASystem, subplots_by_good=False):
         per_capita = self.cfg.use_stock["per_capita"]
@@ -366,36 +637,46 @@ class PlasticsDataExporter(CommonDataExporter):
         self._show_and_save_plotly(fig, name="sankey")
 
     def visualize_extrapolation(self, model: "PlasticsModel"):
+        import numpy as np
+        import colorsys
+
+        try:
+            import matplotlib as mpl
+        except Exception:
+            mpl = None
+
+        # ---------- 数据 ----------
         mfa = model.mfa_future
         per_capita = self.cfg.use_stock["per_capita"]
-        subplot_dim =  "Region"
+        subplot_dim = "Region"
         linecolor_dim = "Good"
-        stock = mfa.stocks["in_use"].stock 
+        stock = mfa.stocks["in_use"].stock
         population = mfa.parameters["population"]
         x_array = None
 
         pc_str = "pC" if per_capita else ""
         x_label = "Year"
         y_label = f"Stock{pc_str} [t]"
-        title = f"Stock Extrapolation: Historic and Projected vs Pure Prediction"
-        
+        title = "Stock Extrapolation: Historic and Projected vs Pure Prediction"
+
+        # ---------- 维度 ----------
         dimlist = ["t"]
         if subplot_dim is not None:
-            subplot_dimletter = next(
-                dimlist.letter for dimlist in mfa.dims.dim_list if dimlist.name == subplot_dim
-            )
+            subplot_dimletter = next(d.letter for d in mfa.dims.dim_list if d.name == subplot_dim)
             dimlist.append(subplot_dimletter)
         if linecolor_dim is not None:
-            linecolor_dimletter = next(
-                dimlist.letter for dimlist in mfa.dims.dim_list if dimlist.name == linecolor_dim
-            )
+            linecolor_dimletter = next(d.letter for d in mfa.dims.dim_list if d.name == linecolor_dim)
             dimlist.append(linecolor_dimletter)
 
         other_dimletters = tuple(letter for letter in stock.dims.letters if letter not in dimlist)
-        stock = stock.sum_over(other_dimletters) * 1000 * 1000
-        other_dimletters = tuple(letter for letter in model.mfa_future.stock_handler.pure_prediction.dims.letters if letter not in dimlist)
-        pure_prediction = model.mfa_future.stock_handler.pure_prediction.sum_over(other_dimletters) * 1000 * 1000
+        stock = stock.sum_over(other_dimletters) * 1_000_000
+        other_dimletters = tuple(
+            letter for letter in model.mfa_future.stock_handler.pure_prediction.dims.letters
+            if letter not in dimlist
+        )
+        pure_prediction = model.mfa_future.stock_handler.pure_prediction.sum_over(other_dimletters) * 1_000_000
 
+        # ---------- X轴可选：GDP ----------
         if self.cfg.use_stock["over_gdp"]:
             title = title + f" over GDP{pc_str}"
             x_label = f"GDP/PPP{pc_str} [2005 USD]"
@@ -409,6 +690,116 @@ class PlasticsDataExporter(CommonDataExporter):
         if per_capita:
             stock = stock / population
 
+        # ---------- 风格（更新：图例放底部 + 调整边距） ----------
+        def _apply_matplotlib_nature_style(fig):
+            if mpl is None:
+                return
+            rc = {
+                "font.family": "DejaVu Sans",
+                "font.size": 10.5,
+                "axes.titlesize": 12.5,
+                "axes.labelsize": 11,
+                "axes.edgecolor": "#333333",
+                "axes.linewidth": 0.9,
+                "axes.facecolor": "white",
+                "axes.grid": False,
+                "xtick.major.size": 3.5,
+                "xtick.major.width": 0.9,
+                "ytick.major.size": 3.5,
+                "ytick.major.width": 0.9,
+                "lines.linewidth": 1.9,
+                "savefig.dpi": 300,
+                "figure.dpi": 120,
+            }
+            with mpl.rc_context(rc):
+                for ax in fig.get_axes():
+                    for side in ["top", "right"]:
+                        ax.spines[side].set_visible(False)
+                # 关键：给标题和底部图例留白
+                try:
+                    fig.subplots_adjust(top=0.92, bottom=0.20)
+                except Exception:
+                    pass
+
+        def _apply_plotly_nature_style(fig):
+            # 关键：图例移到底部，增加底部边距，避免与标题重叠
+            fig.update_layout(
+                template="simple_white",
+                font=dict(family="Arial, DejaVu Sans, Helvetica", size=11),
+                title=dict(font=dict(size=14), y=0.985),
+                margin=dict(l=60, r=24, t=72, b=110),
+                legend=dict(
+                    orientation="h",
+                    xanchor="left", x=0.0,
+                    yanchor="top",  y=-0.14  # 放到图外下方
+                ),
+                showlegend=True,
+                legend_tracegroupgap=8,
+            )
+            fig.update_xaxes(showline=True, linewidth=1, linecolor="#333333",
+                            mirror=False, zeroline=False, gridcolor="rgba(0,0,0,0.08)", ticklen=4)
+            fig.update_yaxes(showline=True, linewidth=1, linecolor="#333333",
+                            mirror=False, zeroline=False, gridcolor="rgba(0,0,0,0.08)", ticklen=4)
+
+        # ---------- 颜色工具（全部输出 hex 字符串） ----------
+        def _to_rgba01(c):
+            if isinstance(c, str):
+                s = c.strip().lower()
+                if s.startswith("#"):
+                    s = s.lstrip("#")
+                    if len(s) == 3:
+                        r, g, b = (int(s[i] * 2, 16) for i in range(3))
+                    elif len(s) == 6:
+                        r, g, b = (int(s[i:i+2], 16) for i in (0, 2, 4))
+                    else:
+                        return (0.22, 0.22, 0.22, 1.0)
+                    return (r/255, g/255, b/255, 1.0)
+                if mpl is not None:
+                    try:
+                        return mpl.colors.to_rgba(c)
+                    except Exception:
+                        return (0.22, 0.22, 0.22, 1.0)
+                return (0.22, 0.22, 0.22, 1.0)
+            if isinstance(c, (tuple, list)) and len(c) in (3, 4):
+                vals = list(c) + ([1.0] if len(c) == 3 else [])
+                r, g, b, a = vals[:4]
+                if max(r, g, b, a) > 1.0:
+                    r, g, b, a = r/255, g/255, b/255, a/255
+                return (float(r), float(g), float(b), float(a))
+            return (0.22, 0.22, 0.22, 1.0)
+
+        def _rgba01_to_hex(rgba):
+            r, g, b, _ = rgba
+            return "#{:02x}{:02x}{:02x}".format(
+                int(round(r*255)), int(round(g*255)), int(round(b*255))
+            )
+
+        def _adjacent_variant_str(c_str, light_add=0.35, sat_mult=0.60, hue_shift_deg=12.0):
+            """同色系但更易分辨：更亮、更低饱和，并小幅度色相偏移。"""
+            r, g, b, a = _to_rgba01(c_str)
+            h, l, s = colorsys.rgb_to_hls(r, g, b)
+            l = min(1.0, l + light_add)
+            s = max(0.0, s * sat_mult)
+            h = (h + hue_shift_deg / 360.0) % 1.0
+            r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
+            return _rgba01_to_hex((r2, g2, b2, a))
+
+        def _nature_base_palette(n):
+            base = [
+                "#374E55", "#DF8F44", "#00A1D5", "#B24745", "#79AF97",
+                "#6A6599", "#80796B", "#4E84C4", "#C4961A"
+            ]
+            if n <= len(base):
+                return base[:n]
+            k = (n + len(base) - 1) // len(base)
+            return (base * k)[:n]
+
+        def _extend_palette(pal, nmin=512):
+            pal = pal or ["#4E84C4"]
+            times = (nmin + len(pal) - 1) // len(pal)
+            return (pal * times)[:nmin]
+
+        # ---------- 主曲线（历史+模型未来） ----------
         fig, ap_final_stock = self.plot_history_and_future(
             mfa=mfa,
             data_to_plot=stock,
@@ -418,10 +809,35 @@ class PlasticsDataExporter(CommonDataExporter):
             x_label=x_label,
             y_label=y_label,
             title=title,
-            #line_label="Historic + Modelled Future",
         )
 
-        # extrapolation
+        # ---------- pure 的颜色：更亮 + 去饱和 + 色相轻偏移 ----------
+        try:
+            base_cmap = list(ap_final_stock.color_map)
+        except Exception:
+            base_cmap = _nature_base_palette(12)
+
+        base_cmap_hex = [
+            _rgba01_to_hex(_to_rgba01(c)) if not isinstance(c, str) else c
+            for c in base_cmap
+        ] or _nature_base_palette(9)
+
+        tinted_base = [_adjacent_variant_str(c) for c in base_cmap_hex]
+
+        # 估算需要颜色数（尽量多给，避免越界）
+        nmin_needed = 512
+        try:
+            n_guess = getattr(getattr(pure_prediction.dims, "_dict")[linecolor_dimletter], "size", None)
+            if not isinstance(n_guess, int) or n_guess <= 0:
+                n_guess = len(getattr(getattr(pure_prediction.dims, "_dict")[linecolor_dimletter], "labels", []))
+            if isinstance(n_guess, int) and n_guess > 0:
+                nmin_needed = max(2 * n_guess, 256)
+        except Exception:
+            pass
+
+        pure_cmap = _extend_palette(tinted_base, nmin=nmin_needed)
+
+        # ---------- 纯外推（点线 + 相近但更显著的颜色） ----------
         ap_pure_prediction = self.plotter_class(
             array=pure_prediction,
             intra_line_dim="Time",
@@ -433,23 +849,59 @@ class PlasticsDataExporter(CommonDataExporter):
             title=title,
             fig=fig,
             line_type="dot",
-            #line_label="Pure Extrapolation",
-            color_map=ap_final_stock.color_map*2,
+            color_map=pure_cmap,
         )
         fig = ap_pure_prediction.plot()
 
-        if self.cfg.plotting_engine == "plotly" and self.cfg.use_stock["over_gdp"]:
-            fig.update_xaxes(title=x_label, type="log")
-        elif self.cfg.plotting_engine == "pyplot" and self.cfg.use_stock["over_gdp"]:
-            for ax in fig.get_axes():
-                ax.set_xscale("log")
-                ax.set_xlabel(x_label)
+        # ---------- 轴尺度 & 风格 ----------
+        if self.cfg.plotting_engine == "plotly":
+            if self.cfg.use_stock["over_gdp"]:
+                fig.update_xaxes(title=x_label, type="log")
+            _apply_plotly_nature_style(fig)  # ← 图例已放到底部
+        elif self.cfg.plotting_engine == "pyplot":
+            if self.cfg.use_stock["over_gdp"]:
+                for ax in fig.get_axes():
+                    ax.set_xscale("log")
+                    ax.set_xlabel(x_label)
+            _apply_matplotlib_nature_style(fig)  # ← 图例区域留白已增大
 
+        # ---------- 方法图例（放到底部，避免与标题冲突） ----------
+        main_demo = base_cmap_hex[0]
+        pure_demo = _adjacent_variant_str(main_demo)
+
+        if self.cfg.plotting_engine == "plotly":
+            try:
+                import plotly.graph_objects as go
+                # 两个“哑”trace形成方法层图例；位置由 _apply_plotly_nature_style 控制为图外底部
+                fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
+                                        name="Historic + Modelled Future",
+                                        line=dict(color=main_demo, width=2)))
+                fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
+                                        name="Pure Extrapolation",
+                                        line=dict(color=pure_demo, width=2, dash="dot")))
+                fig.update_layout(showlegend=True)
+            except Exception:
+                pass
+        elif self.cfg.plotting_engine == "pyplot" and mpl is not None:
+            from matplotlib.lines import Line2D
+            handles = [
+                Line2D([0], [0], color=main_demo, lw=2, label="Historic + Modelled Future"),
+                Line2D([0], [0], color=pure_demo, lw=2, ls=":", label="Pure Extrapolation"),
+            ]
+            try:
+                # 放在底部居中；subplots_adjust 已为底部图例留出空间
+                fig.legend(handles=handles, loc="lower center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 0.04))
+            except Exception:
+                pass
+
+        # ---------- 保存 ----------
         self.plot_and_save_figure(
             ap_pure_prediction,
-            f"stocks_extrapolation.png",
+            "stocks_extrapolation.png",
             do_plot=False,
         )
+
+
 
     def export_stock_extrapolation(self, model: "PlasticsModel"):
         model.mfa_future.stock_handler.pure_parameters.to_df().to_csv(self.export_path("stock_extrapolation_parameters.csv"))

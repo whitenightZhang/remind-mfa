@@ -29,6 +29,7 @@ visualization:
     do_visualize: True
     slice_dict:
       t: 2020
+      r: "CHA"
     exclude_processes:
       #- "sysenv"
       #- "waste_market"
@@ -39,6 +40,7 @@ visualization:
     exclude_flows: [ ]
   flows:
     do_visualize: False
+    
   do_show_figs: True
   do_save_figs: False
 
