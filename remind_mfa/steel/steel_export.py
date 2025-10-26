@@ -13,31 +13,67 @@ from remind_mfa.common.common_cfg import SteelVisualizationCfg
 if TYPE_CHECKING:
     from remind_mfa.steel.steel_model import SteelModel
 
+import plotly.io as pio
+
+# ===== 全局中文字体（按常见平台给出 fallback 列表）=====
+CN_FONT = (
+    "Microsoft YaHei, PingFang SC, Noto Sans CJK SC, Source Han Sans SC, "
+    "SimHei, Arial Unicode MS, DejaVu Sans, Arial"
+)
+
+# 把中文字体注入到默认模板；对所有新建图生效
+pio.templates["cn"] = go.layout.Template(
+    layout=go.Layout(font=dict(family=CN_FONT))
+)
+# 保留你喜欢的底色模板（例如 plotly_white），叠加中文字体
+pio.templates.default = "plotly_white+cn"
 
 class SteelDataExporter(CommonDataExporter):
 
     cfg: SteelVisualizationCfg
 
     # Dictionary of variable names vs names displayed in figures. Used by visualization routines.
+    # _display_names: dict = {
+    #     "sysenv": "System environment",
+    #     "losses": "Losses",
+    #     "imports": "Imports",
+    #     "exports": "Exports",
+    #     "extraction": "Ore<br>Extraction",
+    #     "bof_production": "Production<br>from ores",
+    #     "eaf_production": "Production<br>(EAF)",
+    #     "forming": "Forming",
+    #     "ip_market": "Intermediate<br>products",
+    #     "fabrication": "Fabrication",
+    #     "good_market": "Good Market",
+    #     "in_use": "Use phase",
+    #     "use": "Use phase",
+    #     "obsolete": "Obsolete<br>stocks",
+    #     "eol_market": "End of life<br>products",
+    #     "recycling": "Recycling",
+    #     "scrap_market": "Scrap<br>market",
+    #     "excess_scrap": "Excess<br>scrap",
+    # }
+
+    # —— 中文显示名（用于图例/节点/坐标轴标签等）——
     _display_names: dict = {
-        "sysenv": "System environment",
-        "losses": "Losses",
-        "imports": "Imports",
-        "exports": "Exports",
-        "extraction": "Ore<br>Extraction",
-        "bof_production": "Production<br>from ores",
-        "eaf_production": "Production<br>(EAF)",
-        "forming": "Forming",
-        "ip_market": "Intermediate<br>products",
-        "fabrication": "Fabrication",
-        "good_market": "Good Market",
-        "in_use": "Use phase",
-        "use": "Use phase",
-        "obsolete": "Obsolete<br>stocks",
-        "eol_market": "End of life<br>products",
-        "recycling": "Recycling",
-        "scrap_market": "Scrap<br>market",
-        "excess_scrap": "Excess<br>scrap",
+        "sysenv": "系统环境",
+        "losses": "损失",
+        "imports": "进口",
+        "exports": "出口",
+        "extraction": "矿石<br>开采",
+        "bof_production": "高炉/DRI+EAF",
+        "eaf_production": "废钢+EAF",
+        "forming": "成形",
+        "ip_market": "中间<br>产品市场",
+        "fabrication": "制品制造",
+        "good_market": "制成品<br>市场",
+        "in_use": "使用阶段",
+        "use": "使用阶段",
+        "obsolete": "报废<br>存量",
+        "eol_market": "报废<br>产品",
+        "recycling": "回收处理",
+        "scrap_market": "废钢<br>市场",
+        "excess_scrap": "过剩<br>废钢",
     }
 
     def visualize_results(self, model: "SteelModel"):
@@ -185,38 +221,36 @@ class SteelDataExporter(CommonDataExporter):
 
         self.cfg.sankey["node_color_dict"] = {"default": "gray", "use": "black"}
 
+        # 用中文显示名（加粗保留）
         sdn = {k: f"<b>{v}</b>" for k, v in self._display_names.items()}
         plotter = fde.PlotlySankeyPlotter(mfa=mfa, display_names=sdn, **self.cfg.sankey)
         fig = plotter.plot()
 
         legend_entries = [
-            [production_color, "Production Phase"],
-            [scrap_color, "Scrap Treatment"],
-            [losses_color, "Losses and Waste"],
+            [production_color, "生产阶段"],
+            [scrap_color, "废钢处理"],
+            [losses_color, "损失与废弃"],
             ["white", ""],
-            ["white", "Product Phase"],
+            ["white", "产品类别"],
         ]
         for good, color in zip(mfa.dims["Good"].items, good_colors):
-            # legend_entries.append([color, f"Product Phase ({good})"])
             legend_entries.append([color, good])
 
         for entry in legend_entries:
             fig.add_trace(
                 go.Scatter(
                     mode="markers",
-                    x=[None],
-                    y=[None],
+                    x=[None], y=[None],
                     marker=dict(size=10, color=entry[0], symbol="square"),
                     name=entry[1],
                 )
             )
 
+        # 这里显式再指定一次字体，确保静态导出也吃到中文字体
         fig.update_layout(
-            # title_text=f"Steel Flows ({', '.join([str(v) for v in self.sankey['slice_dict'].values()])})",
-            font_size=18,
+            font=dict(family=CN_FONT, size=26, color="black"),
             showlegend=True,
             plot_bgcolor="rgba(0,0,0,0)",
-            font_color="black",
         )
         fig.update_xaxes(visible=False)
         fig.update_yaxes(visible=False)

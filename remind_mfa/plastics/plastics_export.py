@@ -58,6 +58,41 @@ class PlasticsDataExporter(CommonDataExporter):
         "good_market": "Good Market",
     }
 
+    # _display_names: dict = {
+    #     "sysenv": "系统环境",
+    #     "virginfoss": "初级(化石)",
+    #     "virginbio": "初级(生物质)",
+    #     "virgindaccu": "初级(直接空气捕获)",
+    #     "virginccu": "初级(碳捕获利用)",
+    #     "virgin": "初级(总计)",
+    #     "processing": "加工",
+    #     "fabrication": "制造",
+    #     "reclmech": "机械回收",
+    #     "reclchem": "化学回收",
+    #     "use": "使用阶段",
+    #     "eol": "生命周期终端",
+    #     "collected": "收集",
+    #     "mismanaged": "未收集",
+    #     "incineration": "焚烧",
+    #     "landfill": "填埋",
+    #     "uncontrolled": "无控制处置",
+    #     "emission": "排放",
+    #     "captured": "捕获",
+    #     "atmosphere": "大气",
+    #     "waste_imports": "废料进口",
+    #     "waste_exports": "废料出口",
+    #     "waste_market": "废料市场",
+    #     "primary_imports": "初级进口",
+    #     "primary_exports": "初级出口",
+    #     "primary_market": "初级市场",
+    #     "intermediate_imports": "中间产品进口",
+    #     "intermediate_exports": "中间产品出口",
+    #     "intermediate_market": "中间产品市场",
+    #     "final_imports": "最终产品进口",
+    #     "final_exports": "最终产品出口",
+    #     "good_market": "产品市场",
+    # }
+
     def visualize_results(self, model: "PlasticsModel"):
         if not self.cfg.do_visualize:
             return
@@ -86,11 +121,12 @@ class PlasticsDataExporter(CommonDataExporter):
         if self.cfg.flows["do_visualize"]:
             primary_production = model.mfa_future.flows["virginfoss => virgin"] + model.mfa_future.flows["virginbio => virgin"] + model.mfa_future.flows["virgindaccu => virgin"] + model.mfa_future.flows["virginccu => virgin"]
             self.visualize_flow(mfa=model.mfa_future, flow=primary_production, name="Primary production", subplot_dim="Material")
-            self.visualize_flow(mfa=model.mfa_future, flow=model.mfa_future.flows["recl => fabrication"], name="Secondary production", subplot_dim="Material")
+            self.visualize_flow(mfa=model.mfa_future, flow=model.mfa_future.flows["reclmech => fabrication"], name="Secondary production", subplot_dim="Material")
             self.visualize_flow(mfa=model.mfa_future, flow=model.mfa_future.stocks["in_use"].inflow, name="Demand", subplot_dim="Region", linecolor_dim="Good")
 
-        self.stop_and_show()
-
+        #self.stop_and_show()
+        print("Visualization completed. Charts are saved and displayed.")
+        
     def visualize_flow(
         self, mfa: fd.MFASystem, flow: fd.Flow, name: str, subplot_dim = None, linecolor_dim = None
     ):
@@ -141,78 +177,64 @@ class PlasticsDataExporter(CommonDataExporter):
     def visualize_demand(self, mfa: fd.MFASystem):
         import numpy as np
         import colorsys
+        import matplotlib.cm as cm
+        import matplotlib.colors as mcolors
 
-        # ========= NS-Plastics 基础色（你的版本） =========
-        NS_PLASTICS_SEED = [
-            "#F0857B",  # soft pink
-            "#FEE026",  # muted blue
-            "#95CF93",  # soft green
-            "#BF96C2",  # muted purple
-            "#F6B176",  # soft orange
-            "#87B2D5",  # warm yellow
-            "#CA9A7E",  # tan/brown
-            "#F5B1CA",  # pale pink
-        ]
-
-        # —— 可调参数（保持你当前数值） ——
-        SAT_BOOST_LINES = 1.5    # 折线饱和提升
-        SAT_BOOST_AREAS = 1.0  # 面积饱和提升
-        LIGHTEN_HIST    = 0.22   # 历史线提亮
-        DESAT_HIST      = 0.85   # 历史线去饱和
-        DARKEN_ROUND    = 0.06   # 扩展色板逐轮变暗
-        TOP_PAD         = 0.90   # matplotlib 顶部留白
-        BOTTOM_PAD      = 0.18   # matplotlib 底部留白
-
-        # ========= 从允许的位置读取 Region =========
+        # ========= 读取地区设置 =========
         def _cfg_get(path, default=None):
             obj = self.cfg
             for k in path:
                 try:
                     obj = obj[k] if isinstance(obj, dict) else getattr(obj, k)
-                except Exception:
+                except (KeyError, AttributeError, TypeError):
                     return default
             return obj
 
-        # 仅从 schema 允许的位置读取，避免 pydantic 报错
-        region_sel = _cfg_get(["visualization", "sankey", "slice_dict", "r"])
+        region_sel = (_cfg_get(["sankey", "slice_dict", "r"]) or 
+                    _cfg_get(["production", "region"]) or 
+                    _cfg_get(["demand", "region"]) or 
+                    _cfg_get(["region"]))
 
-        # ========= 颜色 & 工具（全部返回 hex） =========
-        def _hex_to_rgb01(hx: str):
-            hx = hx.strip().lstrip("#")
-            return int(hx[0:2],16)/255.0, int(hx[2:4],16)/255.0, int(hx[4:6],16)/255.0
+        print(f"DEBUG: Region setting: {region_sel}")
 
-        def _rgb01_to_hex(r,g,b):
-            clamp=lambda x:max(0,min(1,x))
-            return "#{:02x}{:02x}{:02x}".format(
-                int(round(clamp(r)*255)), int(round(clamp(g)*255)), int(round(clamp(b)*255))
-            )
+        # ========= Colormap 配色方案 =========
+        def _get_cmap_colors(cmap_name, n_colors):
+            """从 matplotlib colormap 获取颜色"""
+            cmap = cm.get_cmap(cmap_name)
+            colors = []
+            for i in range(n_colors):
+                rgba = cmap(i / (n_colors - 1))
+                hex_color = mcolors.rgb2hex(rgba[:3])
+                colors.append(hex_color)
+            return colors
 
-        def _sat_light(hx: str, sat_mult=1.0, light_add=0.0):
-            r,g,b=_hex_to_rgb01(hx); h,l,s=colorsys.rgb_to_hls(r,g,b)
-            l=min(1.0, l+light_add); s=max(0.0, min(1.0, s*sat_mult))
-            r2,g2,b2=colorsys.hls_to_rgb(h,l,s)
-            return _rgb01_to_hex(r2,g2,b2)
+        def _adjust_colormap_colors(colors, sat_mult=1.0, light_add=0.0):
+            """调整 colormap 颜色的饱和度和亮度"""
+            adjusted = []
+            for hex_color in colors:
+                # 转换为 RGB
+                rgb = mcolors.hex2color(hex_color)
+                # 转换为 HLS
+                h, l, s = colorsys.rgb_to_hls(*rgb)
+                # 调整亮度和饱和度
+                l = min(1.0, l + light_add)
+                s = max(0.0, min(1.0, s * sat_mult))
+                # 转换回 RGB 和 hex
+                rgb_new = colorsys.hls_to_rgb(h, l, s)
+                hex_new = mcolors.rgb2hex(rgb_new)
+                adjusted.append(hex_new)
+            return adjusted
 
-        def _darken(hx: str, delta=0.08):
-            r,g,b=_hex_to_rgb01(hx)
-            return _rgb01_to_hex(r-delta, g-delta, b-delta)
+        # ========= 数据选择 =========
+        def _select_region_or_global(arr):
+            if region_sel:
+                try:
+                    return arr[{"r": region_sel}]
+                except Exception as e:
+                    print(f"Warning: Could not select region '{region_sel}': {e}")
+            return arr.sum_over(("r",))
 
-        def _expand(seed, nmin=256, dark_step=DARKEN_ROUND):
-            """扩展色板长度，避免 color_map 越界。"""
-            if not seed: seed=["#7FB2DE"]
-            out=[]; rounds=(nmin+len(seed)-1)//len(seed)
-            for k in range(rounds):
-                tweak=min(0.18, dark_step*k)
-                out += [_darken(c, tweak) for c in seed]
-            return out[:nmin]
-
-        def _long_black_cmap(n=2048):
-            """提供足够长的黑色 color_map，避免 add_line 时 i_color 越界。"""
-            return ["#000000"] * n
-
-        # ========= 维度安全工具（核心：消除多余维度） =========
         def _sum_over_safe(arr, dims):
-            """对给定 dimletters 逐个尝试 sum_over，忽略不存在的维度。"""
             for d in dims:
                 try:
                     arr = arr.sum_over((d,))
@@ -220,92 +242,68 @@ class PlasticsDataExporter(CommonDataExporter):
                     pass
             return arr
 
-        def _select_region_or_global(arr):
-            """若 cfg 指定 r 则选该 Region；否则对 r 求和为 Global。最后再保险去 r。"""
-            if region_sel:
-                # 常见 API；失败则回退到对 r 求和
-                for meth in ("sel", "select", "slice"):
-                    try:
-                        return getattr(arr, meth)({"r": region_sel})
-                    except Exception:
-                        pass
-                try:
-                    labels = getattr(getattr(arr.dims, "_dict")["r"], "labels", [])
-                    if region_sel in labels:
-                        idx = labels.index(region_sel)
-                        try:
-                            return arr.isel({"r": idx})
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-            return _sum_over_safe(arr, ("r",))
+        # ========= Colormap 配色方案设置 =========
+        # 使用不同的 colormap 生成配色
+        n_colors = 12  # 根据您的数据类别数量调整
+        
+        # 主线条颜色 - 使用 viridis 或 tab10
+        base_colors = _get_cmap_colors('tab10', n_colors)
+        
+        # 历史线条颜色 - 使用相同颜色但调整饱和度和亮度
+        hist_colors = _adjust_colormap_colors(base_colors, sat_mult=0.6, light_add=0.3)
+        
+        # 堆叠面积颜色 - 使用 Set3 或其他柔和的 colormap
+        stacked_colors = _get_cmap_colors('Set3', n_colors)
+        
+        # 扩展颜色列表以避免索引越界
+        base_colors = (base_colors * 10)[:256]
+        hist_colors = (hist_colors * 10)[:256]
+        stacked_colors = (stacked_colors * 10)[:256]
 
-        # —— 基色 / 历史线 / 面积色 —— 
-        base_colors_raw = _expand(NS_PLASTICS_SEED, nmin=512)
-        base_colors     = [_sat_light(c, sat_mult=SAT_BOOST_LINES, light_add=0.0) for c in base_colors_raw]
-        hist_colors     = [_sat_light(c, sat_mult=DESAT_HIST,    light_add=LIGHTEN_HIST) for c in base_colors]
-        stacked_colors  = [_sat_light(c, sat_mult=SAT_BOOST_AREAS, light_add=-0.02)     for c in base_colors]
-
-        # ========= 版式风格 =========
-        def _apply_plotly_style(fig, bottom_legend=True):
-            legend_cfg = dict(orientation="h", xanchor="left", x=0.0)
-            if bottom_legend:
-                legend_cfg.update(yanchor="top", y=-0.12)
-                margins = dict(l=60, r=26, t=64, b=96)
-            else:
-                legend_cfg.update(yanchor="bottom", y=1.02)
-                margins = dict(l=60, r=26, t=72, b=58)
-            fig.update_layout(
-                template="simple_white",
-                font=dict(family="Arial, DejaVu Sans, Helvetica", size=11),
-                title=dict(font=dict(size=14), y=0.98),
-                margin=margins,
-                legend=legend_cfg,
-                showlegend=True,
-            )
-            fig.update_xaxes(showline=True, linewidth=1, linecolor="#333333",
-                            mirror=False, zeroline=False, gridcolor="rgba(0,0,0,0.08)", ticklen=4)
-            fig.update_yaxes(showline=True, linewidth=1, linecolor="#333333",
-                            mirror=False, zeroline=False, gridcolor="rgba(0,0,0,0.08)", ticklen=4)
-
-        def _apply_mpl_style(fig, bottom_legend=True):
-            try:
-                import matplotlib as mpl
-            except Exception:
-                return
-            rc = {
-                "font.family": "DejaVu Sans",
-                "font.size": 10.5,
-                "axes.titlesize": 12.5,
-                "axes.labelsize": 11,
-                "axes.edgecolor": "#333333",
-                "axes.linewidth": 0.9,
-                "axes.facecolor": "white",
-                "axes.grid": False,
-                "xtick.major.size": 3.5, "xtick.major.width": 0.9,
-                "ytick.major.size": 3.5, "ytick.major.width": 0.9,
-                "lines.linewidth": 1.9,
-                "savefig.dpi": 300, "figure.dpi": 120,
-            }
-            with mpl.rc_context(rc):
-                for ax in fig.get_axes():
-                    for side in ["top","right"]:
-                        ax.spines[side].set_visible(False)
-                try:
-                    fig.subplots_adjust(top=TOP_PAD, bottom=BOTTOM_PAD)
-                except Exception:
-                    pass
-
-        def _style(fig, bottom_legend=True):
+        # ========= 样式设置 =========
+        def _style(fig):
             if getattr(self.cfg, "plotting_engine", "plotly") == "plotly":
-                _apply_plotly_style(fig, bottom_legend=bottom_legend)
-            else:
-                _apply_mpl_style(fig, bottom_legend=bottom_legend)
+                fig.update_layout(
+                    template="simple_white",
+                    font=dict(family="Arial, DejaVu Sans, Helvetica", size=14),
+                    title=dict(font=dict(size=18), y=0.98),
+                    margin=dict(l=70, r=30, t=80, b=110),
+                    legend=dict(
+                        orientation="h", 
+                        xanchor="left", 
+                        x=0.0, 
+                        yanchor="top", 
+                        y=-0.12,
+                        font=dict(size=28)
+                    ),
+                    showlegend=True,
+                )
+                fig.update_xaxes(
+                    showline=True, 
+                    linewidth=1, 
+                    linecolor="#333333", 
+                    gridcolor="rgba(0,0,0,0.08)", 
+                    ticklen=4,
+                    tickfont=dict(size=24),
+                    title_font=dict(size=28)  # 修正：使用 title_font 而不是 titlefont
+                )
+                fig.update_yaxes(
+                    showline=True, 
+                    linewidth=1, 
+                    linecolor="#333333", 
+                    gridcolor="rgba(0,0,0,0.08)", 
+                    ticklen=4,
+                    tickfont=dict(size=24),
+                    title_font=dict(size=28)  # 修正：使用 title_font 而不是 titlefont
+                )
 
-        # ========= 1) 折线：Modelled vs Historic =========
+        # ========= 1) 需求对比图：Modelled vs Historic =========
+        region_suffix = f" — {region_sel}" if region_sel else " — Global"
+        
+        # 模型数据
         modeled_array = _select_region_or_global(mfa.stocks["in_use"].inflow)
-        modeled_array = _sum_over_safe(modeled_array, ("m", "e", "r"))  # 保留 dims: [t,g]
+        modeled_array = _sum_over_safe(modeled_array, ("m", "e"))
+        
         ap_modeled = self.plotter_class(
             array=modeled_array,
             intra_line_dim="Time",
@@ -313,11 +311,14 @@ class PlasticsDataExporter(CommonDataExporter):
             line_label="Modelled",
             display_names=self._display_names,
             color_map=base_colors,
+            title=f"Plastic Demand{region_suffix}",
         )
         fig = ap_modeled.plot()
 
+        # 历史数据
         hist_array = _select_region_or_global(mfa.parameters["production"])
-        hist_array = _sum_over_safe(hist_array, ("r",))                # 保留 dims: [th,g] 这里 th=Historic Time
+        hist_array = _sum_over_safe(hist_array, ("r",))
+        
         ap_historic = self.plotter_class(
             array=hist_array,
             intra_line_dim="Historic Time",
@@ -331,116 +332,58 @@ class PlasticsDataExporter(CommonDataExporter):
             line_type="dot",
         )
         fig = ap_historic.plot()
-        _style(fig, bottom_legend=True)
+        _style(fig)
 
-        # 方法图例（底部，确保一定出现）
-        try:
-            if getattr(self.cfg, "plotting_engine", "plotly") == "plotly":
-                import plotly.graph_objects as go
-                fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
-                                        name="Modelled", line=dict(color=base_colors[0], width=2)))
-                fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
-                                        name="Historic", line=dict(color=hist_colors[0], width=2, dash="dot")))
-                fig.update_layout(showlegend=True)
-            else:
-                from matplotlib.lines import Line2D
-                handles = [
-                    Line2D([0],[0], color=base_colors[0], lw=2, label="Modelled"),
-                    Line2D([0],[0], color=hist_colors[0], lw=2, ls=":", label="Historic"),
-                ]
-                try:
-                    fig.legend(handles=handles, loc="lower center", ncol=2,
-                            frameon=False, bbox_to_anchor=(0.5, 0.02))
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        # 添加图例
+        if getattr(self.cfg, "plotting_engine", "plotly") == "plotly":
+            import plotly.graph_objects as go
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
+                                name="Modelled", line=dict(color=base_colors[0], width=2)))
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
+                                name="Historic", line=dict(color=hist_colors[0], width=2, dash="dot")))
 
-        self.plot_and_save_figure(ap_historic, "demand.png")
+        filename_suffix = f"_{region_sel}" if region_sel else "_global"
+        self.plot_and_save_figure(ap_historic, f"demand{filename_suffix}.png")
 
-        # ========= 2) 堆叠面积：Inflow / Outflow / Stock + 黑色 inflow 总折线 =========
-        inflow_allr  = _select_region_or_global(mfa.stocks["in_use"].inflow)
-        outflow_allr = _select_region_or_global(mfa.stocks["in_use"].outflow)
-        stock_allr   = _select_region_or_global(mfa.stocks["in_use"].stock)
+        # ========= 2) 堆叠面积图：Inflow / Outflow / Stock =========
+        # 获取数据
+        inflow = _sum_over_safe(_select_region_or_global(mfa.stocks["in_use"].inflow), ("m", "e"))
+        outflow = _sum_over_safe(_select_region_or_global(mfa.stocks["in_use"].outflow), ("m", "e"))
+        stock = _sum_over_safe(_select_region_or_global(mfa.stocks["in_use"].stock), ("m", "e"))
 
-        inflow = _sum_over_safe(inflow_allr,  ("m", "e"))  # dims: [t,g]
-        outflow = _sum_over_safe(outflow_allr, ("m", "e")) # dims: [t,g]
-        stock  = _sum_over_safe(stock_allr,   ("m", "e"))  # dims: [t,g]
-
-        # Good 维度索引用于 cumsum
+        # 累积求和用于堆叠
         good_dim = inflow.dims.index("g")
-        inflow_cumsum  = inflow.apply(np.cumsum, kwargs={"axis": good_dim})
+        inflow_cumsum = inflow.apply(np.cumsum, kwargs={"axis": good_dim})
         outflow_cumsum = outflow.apply(np.cumsum, kwargs={"axis": good_dim})
-        stock_cumsum   = stock .apply(np.cumsum, kwargs={"axis": good_dim})
+        stock_cumsum = stock.apply(np.cumsum, kwargs={"axis": good_dim})
 
-        # 总 inflow 折线（仅保留 Time）
-        inflow_total_line = _sum_over_safe(inflow, ("g", "r", "m", "e"))  # dims: [t]
+        # 总量线
+        inflow_total = _sum_over_safe(inflow, ("g",))
 
-        # —— Inflow 面积 + 黑线 —— 
-        ap_inflow = self.plotter_class(
-            array=inflow_cumsum,
-            intra_line_dim="Time",
-            linecolor_dim="Good",
-            chart_type="area",
-            display_names=self._display_names,
-            title="Inflow [Mt]" + (f" — {region_sel}" if region_sel else " — Global"),
-            color_map=stacked_colors,
-        )
-        fig_inflow = ap_inflow.plot()
-        ap_inflow_line = self.plotter_class(
-            array=inflow_total_line,
-            intra_line_dim="Time",
-            fig=fig_inflow,
-            line_label="Inflow (total)",
-            color_map=_long_black_cmap(),  # 关键：给足够长的黑色列表，避免越界
-        )
-        fig_inflow = ap_inflow_line.plot()
-        _style(fig_inflow, bottom_legend=True)
-        self.plot_and_save_figure(ap_inflow_line, "inflow_stacked.png", do_plot=False)
-
-        # —— Outflow 面积 + 黑线（仍用 inflow 总线）——
-        ap_outflow = self.plotter_class(
-            array=outflow_cumsum,
-            intra_line_dim="Time",
-            linecolor_dim="Good",
-            chart_type="area",
-            display_names=self._display_names,
-            title="Outflow [Mt]" + (f" — {region_sel}" if region_sel else " — Global"),
-            color_map=stacked_colors,
-        )
-        fig_outflow = ap_outflow.plot()
-        ap_outflow_line = self.plotter_class(
-            array=inflow_total_line,
-            intra_line_dim="Time",
-            fig=fig_outflow,
-            line_label="Inflow (total)",
-            color_map=_long_black_cmap(),
-        )
-        fig_outflow = ap_outflow_line.plot()
-        _style(fig_outflow, bottom_legend=True)
-        self.plot_and_save_figure(ap_outflow_line, "outflow_stacked.png", do_plot=False)
-
-        # —— Stock 面积 + 黑线（仍用 inflow 总线）——
-        ap_stock = self.plotter_class(
-            array=stock_cumsum,
-            intra_line_dim="Time",
-            linecolor_dim="Good",
-            chart_type="area",
-            display_names=self._display_names,
-            title="Stock [Mt]" + (f" — {region_sel}" if region_sel else " — Global"),
-            color_map=stacked_colors,
-        )
-        fig_stock = ap_stock.plot()
-        ap_stock_line = self.plotter_class(
-            array=inflow_total_line,
-            intra_line_dim="Time",
-            fig=fig_stock,
-            line_label="Inflow (total)",
-            color_map=_long_black_cmap(),
-        )
-        fig_stock = ap_stock_line.plot()
-        _style(fig_stock, bottom_legend=True)
-        self.plot_and_save_figure(ap_stock_line, "stock_stacked.png", do_plot=False)
+        # 绘制三个图表
+        for name, data_cumsum in [("inflow", inflow_cumsum), ("outflow", outflow_cumsum), ("stock", stock_cumsum)]:
+            ap_area = self.plotter_class(
+                array=data_cumsum,
+                intra_line_dim="Time",
+                linecolor_dim="Good",
+                chart_type="area",
+                display_names=self._display_names,
+                title=f"{name.title()} [Mt]{region_suffix}",
+                color_map=stacked_colors,
+            )
+            fig_area = ap_area.plot()
+            
+            # 添加总量线
+            ap_line = self.plotter_class(
+                array=inflow_total,
+                intra_line_dim="Time",
+                fig=fig_area,
+                line_label="Inflow (total)",
+                color_map=["#000000"] * 100,
+            )
+            fig_area = ap_line.plot()
+            _style(fig_area)
+            self.plot_and_save_figure(ap_line, f"{name}_stacked{filename_suffix}.png", do_plot=False)
 
 
 
@@ -557,101 +500,151 @@ class PlasticsDataExporter(CommonDataExporter):
         )
 
     def visualize_sankey(self, mfa: fd.MFASystem):
-        # Define colors for each stage
-        production_color = "#EDC948"
-        use_color = "#9EC3D5"
-        eol_color = "#499894"
-        recycle_color = "#86BCB6"
-        emission_color = "#E15759"
-        trade_color = "#D37295"
+        """
+        绘制桑基图（支持中文显示，避免 dict(tr.node) 转换错误）。
+        依赖：fde.PlotlySankeyPlotter、self._display_names、self._show_and_save_plotly。
+        """
+        import platform
+        import plotly.graph_objects as go
 
-        # Initialize default flow color mapping
+        # ============== 中文字体：跨平台 fallback ==============
+        def chinese_font_family() -> str:
+            sys = platform.system()
+            if sys == "Windows":
+                return "Microsoft YaHei, SimHei, DengXian, Arial Unicode MS, Noto Sans CJK SC, sans-serif"
+            elif sys == "Darwin":  # macOS
+                return "PingFang SC, Hiragino Sans GB, Heiti SC, STHeiti, Arial Unicode MS, Noto Sans CJK SC, sans-serif"
+            else:  # Linux / Server
+                # 确保系统安装了 Noto 或 思源黑体：fonts-noto-cjk / source-han-sans-cn
+                return "Noto Sans CJK SC, Source Han Sans SC, WenQuanYi Micro Hei, Arial Unicode MS, DejaVu Sans, sans-serif"
+
+        CN_FONT = chinese_font_family()
+
+        # ============== 配色 ==============
+        production_color = "#EDC948"
+        use_color        = "#9EC3D5"
+        eol_color        = "#499894"
+        recycle_color    = "#86BCB6"
+        emission_color   = "#E15759"
+        trade_color      = "#D37295"
+
+        # ============== 流颜色映射（默认生产色） ==============
         flow_color_dict = {"default": production_color}
 
-        # Assign colors to 'use' flows
-        flow_color_dict.update(
-            {
-                fn: use_color
-                for fn, f in mfa.flows.items()
-                if f.from_process.name == "use" or f.to_process.name == "use"
-            }
-        )
+        # use 流
+        flow_color_dict.update({
+            fn: use_color
+            for fn, f in mfa.flows.items()
+            if getattr(f.from_process, "name", "") == "use" or getattr(f.to_process, "name", "") == "use"
+        })
+        # EoL 流
+        flow_color_dict.update({
+            fn: eol_color
+            for fn, f in mfa.flows.items()
+            if getattr(f.from_process, "name", "") in ("eol", "collected")
+        })
+        # 排放/损失流
+        flow_color_dict.update({
+            fn: emission_color
+            for fn, f in mfa.flows.items()
+            if getattr(f.to_process, "name", "") in ("atmosphere", "mismanaged", "incineration", "uncontrolled", "emission")
+        })
+        # 回收流
+        flow_color_dict.update({
+            fn: recycle_color
+            for fn, f in mfa.flows.items()
+            if getattr(f.from_process, "name", "") in ("reclmech", "reclchem")
+            or getattr(f.to_process, "name", "") in ("reclmech", "reclchem")
+        })
+        # 贸易流（可选：按名称包含 trade/import/export 归类）
+        trade_name_set = {"trade", "imports", "import", "exports", "export", "nettrade"}
+        flow_color_dict.update({
+            fn: trade_color
+            for fn, f in mfa.flows.items()
+            if (getattr(f.from_process, "name", "").lower() in trade_name_set)
+            or (getattr(f.to_process, "name", "").lower() in trade_name_set)
+            or ("trade" in getattr(f.from_process, "name", "").lower())
+            or ("trade" in getattr(f.to_process, "name", "").lower())
+        })
 
-        # Assign colors to end-of-life flows
-        flow_color_dict.update(
-            {
-                fn: eol_color
-                for fn, f in mfa.flows.items()
-                if f.from_process.name in ("eol", "collected")
-            }
-        )
+        # ============== Sankey 布局参数（合并到 cfg） ==============
+        try:
+            sankey_cfg = dict(self.cfg.sankey)
+        except Exception:
+            sankey_cfg = {}
+        sankey_cfg.update({
+            "valueformat": ".2s",        # 科学计数，两位有效数字
+            "node_pad": 15,              # 节点间距
+            "node_thickness": 20,        # 节点厚度
+            "arrangement": "snap",       # 减少边交叉
+            "flow_color_dict": flow_color_dict,
+            "node_color_dict": {"default": "gray", "use": "black"},
+            # 如果 Plotter 支持透传 textfont / node_textfont，这里一并给出（不支持也无碍）
+            "textfont": {"family": CN_FONT, "size": 18, "color": "black"},
+            "node_textfont": {"family": CN_FONT, "size": 18, "color": "black"},
+        })
+        self.cfg.sankey = sankey_cfg
 
-        # Assign colors to emission flows
-        flow_color_dict.update(
-            {
-                fn: emission_color
-                for fn, f in mfa.flows.items()
-                if f.to_process.name
-                in ("atmosphere", "mismanaged", "incineration", "uncontrolled", "emission")
-            }
-        )
-
-        # Assign colors to recycling flows
-        flow_color_dict.update(
-            {
-                fn: recycle_color
-                for fn, f in mfa.flows.items()
-                if f.from_process.name in ("reclmech", "reclchem")
-                or f.to_process.name in ("reclmech", "reclchem")
-            }
-        )
-
-        # Update Sankey layout configuration
-        self.cfg.sankey.update(
-            {
-                "valueformat": ".2s",  # scientific notation, two significant digits
-                "node_pad": 15,  # padding between nodes
-                "node_thickness": 20,  # node thickness
-                "arrangement": "snap",  # reduce crossings by snapping nodes
-                "flow_color_dict": flow_color_dict,
-                "node_color_dict": {"default": "gray", "use": "black"},
-            }
-        )
-
-        # Prepare display names and generate the Sankey diagram
+        # ============== 构建并绘图 ==============
         display_names_fmt = {k: f"<b>{v}</b>" for k, v in self._display_names.items()}
         plotter = fde.PlotlySankeyPlotter(
-            mfa=mfa, display_names=display_names_fmt, **self.cfg.sankey
+            mfa=mfa,
+            display_names=display_names_fmt,
+            **self.cfg.sankey
         )
         fig = plotter.plot()
 
-        # Add legend entries
+        # ============== 图例（方块占位） ==============
         legend_entries = [
             (production_color, "Production"),
-            (eol_color, "End-of-Life"),
-            (recycle_color, "Use"),
-            (emission_color, "Losses"),
-            (trade_color, "Trade"),
+            (use_color,        "Use"),
+            (eol_color,        "End-of-Life"),
+            (recycle_color,    "Recycling"),
+            (emission_color,   "Losses"),
+            (trade_color,      "Trade"),
         ]
         for color, label in legend_entries:
             fig.add_trace(
                 go.Scatter(
                     mode="markers",
-                    x=[None],
-                    y=[None],
+                    x=[None], y=[None],
                     marker=dict(size=10, color=color, symbol="square"),
                     name=label,
+                    showlegend=True,
                 )
             )
 
-        # Final layout adjustments and display
+        # ============== 布局与中文字体生效（关键） ==============
         fig.update_layout(
-            font_size=18, showlegend=True, plot_bgcolor="rgba(0,0,0,0)", font_color="black"
+            font=dict(family=CN_FONT, size=18, color="black"),
+            showlegend=True,
+            plot_bgcolor="rgba(0,0,0,0)",
         )
         fig.update_xaxes(visible=False)
         fig.update_yaxes(visible=False)
 
+        # 将中文字体应用到 sankey 文本与悬浮框（避免直接操作 tr.node）
+        fig.update_traces(
+            selector=dict(type="sankey"),
+            textfont=dict(family=CN_FONT),
+            hoverlabel=dict(font=dict(family=CN_FONT)),
+        )
+
+        # ===== 字体大小（自己改数值） =====
+        SIZE_NODE  = 24  # 节点文字（Sankey label）
+        SIZE_GLOBAL= 20   # 全局/图例/hover
+
+        # 节点标签 & 悬浮框
+        fig.update_traces(
+            selector=dict(type="sankey"),
+            textfont=dict(family=CN_FONT, size=SIZE_NODE),                  # 节点文字变大
+            hoverlabel=dict(font=dict(family=CN_FONT, size=SIZE_GLOBAL)),   # 悬浮框文字变大
+        )
+
+        # ============== 显示/保存 ==============
         self._show_and_save_plotly(fig, name="sankey")
+
+
 
     def visualize_extrapolation(self, model: "PlasticsModel"):
         import numpy as np
@@ -912,9 +905,11 @@ class PlasticsDataExporter(CommonDataExporter):
                 pass
 
         # ---------- 保存 ----------
+        suffix = "_overGDP" if self.cfg.use_stock["over_gdp"] else "_overTime"
+
         self.plot_and_save_figure(
             ap_pure_prediction,
-            f"stocks_extrapolation{'_overGDP' if self.cfg.use_stock["over_gdp"] else '_overTime'}.png",
+            f"stocks_extrapolation{suffix}.png",
             do_plot=False,
         )
 
@@ -1066,7 +1061,7 @@ class PlasticsDataExporter(CommonDataExporter):
 
     @staticmethod
     def to_iamc_df(array: fd.FlodymArray):
-        time_items = list(range(2025, 2101)) # TODO: more flexible
+        time_items = list(range(2020, 2101)) # TODO: more flexible
         time_out = fd.Dimension(name="Time Out", letter="O", items=time_items)
         df = array[{"t": time_out}].to_df(dim_to_columns="Time Out", index=False)
         df = df.rename(columns={"Region": "region"})
