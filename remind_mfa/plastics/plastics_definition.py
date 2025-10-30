@@ -105,8 +105,8 @@ def get_definition(cfg: GeneralCfg, historic: bool) -> PlasticsMFADefinition:
             fd.FlowDefinition(from_process="collected", to_process="landfill", dim_letters=("t","e","r","m")),
             fd.FlowDefinition(from_process="collected", to_process="incineration", dim_letters=("t","e","r","m")),
             fd.FlowDefinition(from_process="mismanaged", to_process="uncontrolled", dim_letters=("t","e","r","m")),
-            fd.FlowDefinition(from_process="reclmech", to_process="fabrication", dim_letters=("t","e","r","m")),
-            fd.FlowDefinition(from_process="reclchem", to_process="processing", dim_letters=("t","e","r","m")),
+            fd.FlowDefinition(from_process="reclmech", to_process="processing", dim_letters=("t","e","r","m")),
+            fd.FlowDefinition(from_process="reclchem", to_process="virgin", dim_letters=("t","e","r","m")),
             fd.FlowDefinition(from_process="reclmech", to_process="uncontrolled", dim_letters=("t","e","r","m")),
             fd.FlowDefinition(from_process="reclmech", to_process="incineration", dim_letters=("t","e","r","m")),
             fd.FlowDefinition(from_process="incineration", to_process="emission", dim_letters=("t","e","r")),
@@ -206,9 +206,10 @@ def get_definition(cfg: GeneralCfg, historic: bool) -> PlasticsMFADefinition:
         fd.ParameterDefinition(name="primary_his_exports", dim_letters=("h", "r")),
         fd.ParameterDefinition(name="intermediate_his_imports", dim_letters=("h", "r")),
         fd.ParameterDefinition(name="intermediate_his_exports", dim_letters=("h", "r")),
+        fd.ParameterDefinition(name="manufactured_his_imports", dim_letters=("h", "r")),
+        fd.ParameterDefinition(name="manufactured_his_exports", dim_letters=("h", "r")),
         fd.ParameterDefinition(name="final_his_imports", dim_letters=("h", "r")),
         fd.ParameterDefinition(name="final_his_exports", dim_letters=("h", "r")),
-
         fd.ParameterDefinition(name="waste_imports", dim_letters=("t", "r")),
         fd.ParameterDefinition(name="waste_exports", dim_letters=("t", "r")),
         # virgin production rates
@@ -233,12 +234,14 @@ def get_definition(cfg: GeneralCfg, historic: bool) -> PlasticsMFADefinition:
         trades = [
             TradeDefinition(name="primary_his", dim_letters=("h", "r")),
             TradeDefinition(name="intermediate_his", dim_letters=("h", "r")),
+            TradeDefinition(name="manufactured_his", dim_letters=("h", "r")),
             TradeDefinition(name="final_his", dim_letters=("h", "r")),
         ]
     else:
         trades = [
             TradeDefinition(name="primary", dim_letters=("t", "r")),
             TradeDefinition(name="intermediate", dim_letters=("t", "r")),
+            TradeDefinition(name="manufactured", dim_letters=("t", "r")),
             TradeDefinition(name="final", dim_letters=("t", "r")),
             TradeDefinition(name="waste", dim_letters=("t", "r")),
         ]
