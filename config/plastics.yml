@@ -28,8 +28,8 @@ visualization:
   sankey:
     do_visualize: True
     slice_dict:
-      t: 2100
-      r: "EUR"
+      t: 2020
+      r: "MEA"
     exclude_processes:
       - "sysenv"
       - "waste_market"

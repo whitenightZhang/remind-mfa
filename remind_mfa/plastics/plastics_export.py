@@ -581,14 +581,12 @@ class PlasticsDataExporter(CommonDataExporter):
             or getattr(f.to_process, "name", "") in ("reclmech", "reclchem")
         })
         # 贸易流（可选：按名称包含 trade/import/export 归类）
-        trade_name_set = {"trade", "imports", "import", "exports", "export", "nettrade"}
+        trade_keywords = {"trade", "import", "export"} # 使用更简洁的关键字
         flow_color_dict.update({
             fn: trade_color
             for fn, f in mfa.flows.items()
-            if (getattr(f.from_process, "name", "").lower() in trade_name_set)
-            or (getattr(f.to_process, "name", "").lower() in trade_name_set)
-            or ("trade" in getattr(f.from_process, "name", "").lower())
-            or ("trade" in getattr(f.to_process, "name", "").lower())
+            if any(keyword in getattr(f.from_process, "name", "").lower() for keyword in trade_keywords)
+            or any(keyword in getattr(f.to_process, "name", "").lower() for keyword in trade_keywords)
         })
 
         # ============== Sankey 布局参数（合并到 cfg） ==============
