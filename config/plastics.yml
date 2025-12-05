@@ -28,25 +28,26 @@ visualization:
   sankey:
     do_visualize: True
     slice_dict:
-      t: 2020
-      r: "MEA"
+      t: 2019
+      r: "EUR"
     exclude_processes:
       - "sysenv"
-      - "waste_market"
-      - "primary_market"
-      - "intermediate_market"
-      - "good_market"
-
+      #- "waste_market"
+      #- "primary_market"
+      #- "intermediate_market"
+      #- "good_market"
     exclude_flows: [ ]
   flows:
     do_visualize: True
-    
   do_show_figs: True
   do_save_figs: False
 
 # data export
 output_path: 'data/plastics/output'
+docs_path: 'docs/plastics'
 do_export:
   pickle: False
   csv: True
   iamc: True
+  definitions: True
+  assumptions: True

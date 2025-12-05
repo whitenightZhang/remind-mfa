@@ -47,8 +47,10 @@ visualization:
 
 # data export
 output_path: 'data/steel/output'
+docs_path: 'docs/steel'
 do_export:
   pickle: False
   csv: False
   future_input: False
   iamc: True
+  definitions: True

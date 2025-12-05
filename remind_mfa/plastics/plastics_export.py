@@ -44,17 +44,9 @@ class PlasticsDataExporter(CommonDataExporter):
         "emission": "Emissions",
         "captured": "Captured",
         "atmosphere": "Atmosphere",
-        "waste_imports": "Wastes Imports",
-        "waste_exports": "Wastes Exports",
         "waste_market": "Waste Market",
-        "primary_imports": "Prim Imports",
-        "primary_exports": "Prim Exports",
         "primary_market": "Prim Market",
-        "intermediate_imports": "Inter Imports",
-        "intermediate_exports": "Inter Exports",
         "intermediate_market": "Inter Market",
-        "final_imports": "Final Imports",
-        "final_exports": "Final Exports",
         "good_market": "Good Market",
     }
 
@@ -102,7 +94,8 @@ class PlasticsDataExporter(CommonDataExporter):
         self.export_production_data_by_region_and_year(mfa=model.mfa_future)
         self.export_recycling_data_by_region_and_year(mfa=model.mfa_future)
         self.export_stock_extrapolation(model=model)
-        self.export_stock(mfa=model.mfa_historic)
+        self.export_stock(model=model)
+        self.export_stock_by_region(model=model)
 
         if self.do_export.iamc:
             self.write_iamc(mfa=model.mfa_future)
@@ -134,8 +127,14 @@ class PlasticsDataExporter(CommonDataExporter):
             )
             self.visualize_flow(
                 mfa=model.mfa_future,
-                flow=model.mfa_future.flows["reclchem => virgin"] + model.mfa_future.flows["reclmech => processing"],
-                name="Secondary production",
+                flow=model.mfa_future.flows["reclmech => processing"],
+                name="Mechanical recycling",
+                subplot_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["reclchem => virgin"],
+                name="Chemical recycling",
                 subplot_dim="Material",
             )
             self.visualize_flow(
@@ -619,11 +618,11 @@ class PlasticsDataExporter(CommonDataExporter):
         # ============== 图例（方块占位） ==============
         legend_entries = [
             (production_color, "Production"),
-            (use_color,        "Use"),
-            (eol_color,        "End-of-Life"),
-            (recycle_color,    "Recycling"),
-            (emission_color,   "Losses"),
-            (trade_color,      "Trade"),
+            (eol_color, "End-of-Life"),
+            (recycle_color, "Recycling"),
+            (use_color, "Use"),
+            (emission_color, "Losses"),
+            (trade_color, "Trade"),
         ]
         for color, label in legend_entries:
             fig.add_trace(
@@ -935,7 +934,7 @@ class PlasticsDataExporter(CommonDataExporter):
 
         self.plot_and_save_figure(
             ap_pure_prediction,
-            f"stocks_extrapolation{suffix}.png",
+            f"stocks_extrapolation{'_overGDP' if self.cfg.use_stock['over_gdp'] else '_overTime'}.png",
             do_plot=False,
         )
 
@@ -949,22 +948,63 @@ class PlasticsDataExporter(CommonDataExporter):
             self.export_path("stock_extrapolation_saturationLevel.csv")
         )
 
-    def export_stock(self, mfa: fd.MFASystem):
-        inflow = mfa.stocks["in_use_historic"].inflow.sum_to(("g", "h")).to_df()
-        inflow["variable"] = "inflow"
-        outflow = mfa.stocks["in_use_historic"].outflow.sum_to(("g", "h")).to_df()
-        outflow["variable"] = "outflow"
-        stock = mfa.stocks["in_use_historic"].stock.sum_to(("g", "h")).to_df()
-        stock["variable"] = "stock"
-        pd.concat([inflow, outflow, stock]).to_csv(self.export_path("stock.csv"))
+    def export_stock(self, model: "PlasticsModel"):
+        # 1. 获取历史数据
+        mfa_h = model.mfa_historic
+        inflow_h = mfa_h.stocks["in_use_historic"].inflow.sum_to(("g", "h")).to_df()
+        outflow_h = mfa_h.stocks["in_use_historic"].outflow.sum_to(("g", "h")).to_df()
+        stock_h = mfa_h.stocks["in_use_historic"].stock.sum_to(("g", "h")).to_df()
+        
+        # 2. 获取未来数据
+        mfa_f = model.mfa_future
+        inflow_f = mfa_f.stocks["in_use"].inflow.sum_to(("g", "t")).to_df()
+        outflow_f = mfa_f.stocks["in_use"].outflow.sum_to(("g", "t")).to_df()
+        stock_f = mfa_f.stocks["in_use"].stock.sum_to(("g", "t")).to_df()
+
+        # 3. 统一列名并拼接
+        def _clean(df, var_name):
+            # 关键修正：重置索引，将维度转换为列
+            df = df.reset_index()
+            df["variable"] = var_name
+            return df.rename(columns={"Historic Time": "Year", "Time": "Year"})
+
+        pd.concat([
+            _clean(inflow_h, "inflow"), _clean(outflow_h, "outflow"), _clean(stock_h, "stock"),
+            _clean(inflow_f, "inflow"), _clean(outflow_f, "outflow"), _clean(stock_f, "stock")
+        ]).to_csv(self.export_path("stock.csv"), index=False)
+
+    def export_stock_by_region(self, model: "PlasticsModel"):
+        # 1. 获取历史数据
+        mfa_h = model.mfa_historic
+        inflow_h = mfa_h.stocks["in_use_historic"].inflow.sum_to(("r", "h")).to_df()
+        outflow_h = mfa_h.stocks["in_use_historic"].outflow.sum_to(("r", "h")).to_df()
+        stock_h = mfa_h.stocks["in_use_historic"].stock.sum_to(("r", "h")).to_df()
+        
+        # 2. 获取未来数据
+        mfa_f = model.mfa_future
+        inflow_f = mfa_f.stocks["in_use"].inflow.sum_to(("r", "t")).to_df()
+        outflow_f = mfa_f.stocks["in_use"].outflow.sum_to(("r", "t")).to_df()
+        stock_f = mfa_f.stocks["in_use"].stock.sum_to(("r", "t")).to_df()
+
+        # 3. 统一列名并拼接
+        def _clean(df, var_name):
+            # 关键修正：重置索引，将维度转换为列
+            df = df.reset_index()
+            df["variable"] = var_name
+            return df.rename(columns={"Historic Time": "Year", "Time": "Year"})
+
+        pd.concat([
+            _clean(inflow_h, "inflow"), _clean(outflow_h, "outflow"), _clean(stock_h, "stock"),
+            _clean(inflow_f, "inflow"), _clean(outflow_f, "outflow"), _clean(stock_f, "stock")
+        ]).to_csv(self.export_path("stock_by_region.csv"), index=False)
 
     def export_eol_data_by_region_and_year(
         self, mfa: fd.MFASystem, output_path: str = "eol_by_region_year.csv"
     ):
         eol_data = (
             mfa.flows["eol => collected"]
-            + mfa.flows["waste_imports => collected"]
-            - mfa.flows["collected => waste_exports"]
+            + mfa.flows["waste_market => collected"]
+            - mfa.flows["collected => waste_market"]
         )
         df = eol_data.sum_to(("t", "r", "m")).to_df(index=True)
         df.to_csv(self.export_path(output_path), index=True)
@@ -979,7 +1019,7 @@ class PlasticsDataExporter(CommonDataExporter):
         self, mfa: fd.MFASystem, output_path: str = "production_by_region_year.csv"
     ):
         df = mfa.flows["virgin => processing"].sum_to(("t", "r")).to_df(index=True) + \
-            mfa.flows["virgin => primary_exports"].sum_to(("t", "r")).to_df(index=True) + \
+            mfa.flows["virgin => primary_market"].sum_to(("t", "r")).to_df(index=True) + \
             mfa.flows["reclmech => processing"].sum_to(("t", "r")).to_df(index=True)
             
         df.to_csv(self.export_path(output_path), index=True)
@@ -990,6 +1030,19 @@ class PlasticsDataExporter(CommonDataExporter):
         recl_data = mfa.flows["collected => reclmech"] + mfa.flows["collected => reclchem"]
         df = recl_data.sum_to(("t", "r", "m")).to_df(index=True)
         df.to_csv(self.export_path(output_path), index=True)
+
+    def export_mfa(self, model: "PlasticsModel"):
+        super().export_mfa(mfa=model.mfa_future)
+        if self.do_export.iamc:
+            self.write_iamc(mfa=model.mfa_future)
+        if self.do_export.csv:
+            self.export_eol_data_by_region_and_year(mfa=model.mfa_future)
+            self.export_use_data_by_region_and_year(mfa=model.mfa_future)
+            self.export_recycling_data_by_region_and_year(mfa=model.mfa_future)
+            self.export_stock_extrapolation(model=model)
+            self.export_stock(model=model)
+            self.export_stock_by_region(model=model)
+            
 
     def write_iamc(self, mfa: fd.MFASystem):
 

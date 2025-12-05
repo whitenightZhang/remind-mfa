@@ -26,6 +26,7 @@ class CementModel:
             cfg=self.cfg.visualization,
             do_export=self.cfg.do_export,
             output_path=self.cfg.output_path,
+            docs_path=self.cfg.docs_path,
         )
         self.dims = self.data_reader.read_dimensions(self.definition.dimensions)
         self.parameters = self.data_reader.read_parameters(
@@ -45,6 +46,7 @@ class CementModel:
 
         # visualization and export
         self.data_writer.export_mfa(mfa=self.future_mfa)
+        self.data_writer.definition_to_markdown(definition=self.definition)
         self.data_writer.visualize_results(model=self)
 
     def make_historic_mfa(self) -> InflowDrivenHistoricCementMFASystem:

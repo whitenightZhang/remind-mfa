@@ -31,6 +31,7 @@ class SteelModel:
             cfg=self.cfg.visualization,
             do_export=self.cfg.do_export,
             output_path=self.cfg.output_path,
+            docs_path=self.cfg.docs_path,
         )
         if stock_driven:
             self.definition_historic = get_definition(self.cfg, historic=True, stock_driven=False)
@@ -46,6 +47,7 @@ class SteelModel:
         self.future_mfa.compute(stock_projection, historic_trade)
 
         self.data_writer.export_mfa(mfa=self.future_mfa)
+        self.data_writer.definition_to_markdown(definition=self.definition_future)
         self.data_writer.visualize_results(model=self)
 
     def read_data(self, definition: SteelMFADefinition):
