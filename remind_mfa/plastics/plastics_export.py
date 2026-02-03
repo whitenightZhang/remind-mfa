@@ -123,38 +123,128 @@ class PlasticsDataExporter(CommonDataExporter):
                 mfa=model.mfa_future,
                 flow=primary_production,
                 name="Primary production",
-                subplot_dim="Material",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["virgin => processing"],
+                name="Domestic primary production",
+                subplot_dim="Region",
+                linecolor_dim="Material",
             )
             self.visualize_flow(
                 mfa=model.mfa_future,
                 flow=model.mfa_future.flows["reclmech => processing"],
                 name="Mechanical recycling",
-                subplot_dim="Material",
+                subplot_dim="Region",
+                linecolor_dim="Material",
             )
             self.visualize_flow(
                 mfa=model.mfa_future,
                 flow=model.mfa_future.flows["reclchem => virgin"],
                 name="Chemical recycling",
-                subplot_dim="Material",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["eol => collected"],
+                name="Collected",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["collected => landfill"],
+                name="Landfilled",
+                subplot_dim="Region",
+                linecolor_dim="Material",
             )
             self.visualize_flow(
                 mfa=model.mfa_future,
                 flow=model.mfa_future.stocks["in_use"].inflow,
                 name="Demand",
                 subplot_dim="Region",
-                linecolor_dim="Good",
+                linecolor_dim="Material",
             )
-
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["fabrication => good_market"],
+                name="Final exports",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["good_market => use"],
+                name="Final imports",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["processing => intermediate_market"],
+                name="Intermediate exports",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["intermediate_market => fabrication"],
+                name="Intermediate imports",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["virgin => primary_market"],
+                name="Primary exports",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["primary_market => processing"],
+                name="Primary imports",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["collected => waste_market"],
+                name="Waste exports",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["waste_market => collected"],
+                name="Waste imports",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            self.visualize_flow(
+                mfa=model.mfa_future,
+                flow=model.mfa_future.flows["fabrication => use"],
+                name="Domestic Fabrication",
+                subplot_dim="Region",
+                linecolor_dim="Material",
+            )
+            
+            # EoL fate rates (recycling / incineration / landfill)
+            self.visualize_eol_rates(mfa=model.mfa_future)
+            
         #self.stop_and_show()
         print("Visualization completed. Charts are saved and displayed.")
         
     def visualize_flow(
-        self, mfa: fd.MFASystem, flow: fd.Flow, name: str, subplot_dim=None, linecolor_dim=None
+        self, mfa: fd.MFASystem, flow: fd.Flow, name: str, subplot_dim=None, linecolor_dim=None, y_label: str = "Flow [Mt]",
     ):
 
         x_array = None
         x_label = "Year"
-        y_label = "Flow [Mt]"
+        y_label = y_label
         subplot_dimletter = ()
         linecolor_dimletter = ()
         if subplot_dim is not None:
@@ -339,7 +429,7 @@ class PlasticsDataExporter(CommonDataExporter):
         fig = ap_modeled.plot()
 
         # 历史数据
-        hist_array = _select_region_or_global(mfa.parameters["production"])
+        hist_array = _select_region_or_global(mfa.parameters["consumption"])
         hist_array = _sum_over_safe(hist_array, ("r",))
         
         ap_historic = self.plotter_class(
@@ -448,7 +538,7 @@ class PlasticsDataExporter(CommonDataExporter):
         else:
             subplot_dim = {}
             stock = stock.sum_over("g")
-            stock = stock.sum_over(["e", "m"])
+        stock = stock.sum_over(["e", "m"])
 
         if per_capita:
             stock = stock / population
@@ -521,6 +611,78 @@ class PlasticsDataExporter(CommonDataExporter):
             f"plastic_stocks_global_by_region{'_per_capita' if per_capita else ''}.png",
             do_plot=False,
         )
+
+    def visualize_eol_rates(self, mfa: fd.MFASystem):
+        """
+        Visualize recycling, incineration and landfill rates
+        (share of collected plastic going to each fate) by region over time.
+        """
+
+        # 1. Define the main EoL fate flows
+        #    If you also have 'collected => uncontrolled', you can add it
+        #    to 'total' as well – here we only use recycling/incineration/landfill.
+        recl = (
+            mfa.flows["collected => reclmech"]
+            + mfa.flows["collected => reclchem"]
+        )
+        incin = mfa.flows["collected => incineration"]
+        landfill = mfa.flows["collected => landfill"]
+
+        # 2. Aggregate across all non-(Region, Time) dimensions
+        def _sum_to_rt(arr: fd.FlodymArray) -> fd.FlodymArray:
+            # Keep only region ('r') and time ('t') dimensions
+            keep_letters = ("r", "t")
+            sum_letters = tuple(
+                letter for letter in arr.dims.letters if letter not in keep_letters
+            )
+            if len(sum_letters) == 0:
+                return arr
+            return arr.sum_over(sum_letters)
+
+        recl_rt = _sum_to_rt(recl)
+        incin_rt = _sum_to_rt(incin)
+        landfill_rt = _sum_to_rt(landfill)
+
+        total_rt = recl_rt + incin_rt + landfill_rt
+
+        # 3. Convert to rates [% of total collected going to each fate]
+        #    Add a tiny epsilon to avoid division by zero.
+        eps = 1e-12
+        total_safe = total_rt + eps
+
+        recl_rate = recl_rt / total_safe * 100.0
+        incin_rate = incin_rt / total_safe * 100.0
+        landfill_rate = landfill_rt / total_safe * 100.0
+
+        # 4. Plot each rate by region
+        #    We reuse visualize_flow so that style is consistent.
+        self.visualize_flow(
+            mfa=mfa,
+            flow=recl_rate,
+            name="Recycling rate",
+            subplot_dim="Region",
+            linecolor_dim=None,
+            y_label="Share of collected plastic [%]",
+        )
+
+        self.visualize_flow(
+            mfa=mfa,
+            flow=incin_rate,
+            name="Incineration rate",
+            subplot_dim="Region",
+            linecolor_dim=None,
+            y_label="Share of collected plastic [%]",
+        )
+
+        self.visualize_flow(
+            mfa=mfa,
+            flow=landfill_rate,
+            name="Landfill rate",
+            subplot_dim="Region",
+            linecolor_dim=None,
+            y_label="Share of collected plastic [%]",
+        )
+
 
     def visualize_sankey(self, mfa: fd.MFASystem):
         """
@@ -885,6 +1047,7 @@ class PlasticsDataExporter(CommonDataExporter):
             line_type="dot",
             # line_label="Pure Extrapolation",
             color_map=ap_final_stock.color_map * 2,
+            suppress_legend=True,
         )
         fig = ap_pure_prediction.plot()
 
